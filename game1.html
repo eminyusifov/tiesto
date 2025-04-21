@@ -1,0 +1,204 @@
+<script type="text/javascript">
+        var gk_isXlsx = false;
+        var gk_xlsxFileLookup = {};
+        var gk_fileData = {};
+        function filledCell(cell) {
+          return cell !== '' && cell != null;
+        }
+        function loadFileData(filename) {
+        if (gk_isXlsx && gk_xlsxFileLookup[filename]) {
+            try {
+                var workbook = XLSX.read(gk_fileData[filename], { type: 'base64' });
+                var firstSheetName = workbook.SheetNames[0];
+                var worksheet = workbook.Sheets[firstSheetName];
+
+                // Convert sheet to JSON to filter blank rows
+                var jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, blankrows: false, defval: '' });
+                // Filter out blank rows (rows where all cells are empty, null, or undefined)
+                var filteredData = jsonData.filter(row => row.some(filledCell));
+
+                // Heuristic to find the header row by ignoring rows with fewer filled cells than the next row
+                var headerRowIndex = filteredData.findIndex((row, index) =>
+                  row.filter(filledCell).length >= filteredData[index + 1]?.filter(filledCell).length
+                );
+                // Fallback
+                if (headerRowIndex === -1 || headerRowIndex > 25) {
+                  headerRowIndex = 0;
+                }
+
+                // Convert filtered JSON back to CSV
+                var csv = XLSX.utils.aoa_to_sheet(filteredData.slice(headerRowIndex)); // Create a new sheet from filtered array of arrays
+                csv = XLSX.utils.sheet_to_csv(csv, { header: 1 });
+                return csv;
+            } catch (e) {
+                console.error(e);
+                return "";
+            }
+        }
+        return gk_fileData[filename] || "";
+        }
+        </script><!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sensor Game</title>
+  <style>
+    body { margin: 0; overflow: hidden; background: #222; color: white; font-family: Arial; }
+    canvas { display: block; }
+    #status { position: absolute; top: 10px; left: 10px; }
+    #compass { position: absolute; top: 40px; left: 10px; }
+    #score { position: absolute; top: 70px; left: 10px; }
+    #startButton { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); padding: 20px; font-size: 18px; }
+  </style>
+</head>
+<body>
+  <div id="status">Press Start to enable sensors</div>
+  <div id="compass">Compass: N/A</div>
+  <div id="score">Score: 0</div>
+  <button id="startButton" onclick="startGame()">Start Game</button>
+  <canvas id="canvas"></canvas>
+
+  <script>
+    let canvas, ctx, ball, coins = [], score = 0, audioContext, pannerNode;
+    const ballRadius = 20, coinRadius = 10, speed = 0.5;
+
+    async function startGame() {
+      if (typeof DeviceMotionEvent.requestPermission === 'function') {
+        try {
+          const permission = await DeviceMotionEvent.requestPermission();
+          if (permission === 'granted') {
+            initGame();
+            document.getElementById('startButton').style.display = 'none';
+            document.getElementById('status').textContent = 'Sensors active!';
+          } else {
+            document.getElementById('status').textContent = 'Permission denied';
+          }
+        } catch (error) {
+          document.getElementById('status').textContent = 'Error: ' + error.message;
+        }
+      } else {
+        initGame(); // Fallback for devices without permission API
+      }
+    }
+
+    function initGame() {
+      canvas = document.getElementById('canvas');
+      ctx = canvas.getContext('2d');
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+
+      // Initialize ball
+      ball = { x: canvas.width / 2, y: canvas.height / 2, vx: 0, vy: 0 };
+
+      // Initialize audio
+      audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      pannerNode = new PannerNode(audioContext, {
+        panningModel: 'HRTF',
+        distanceModel: 'inverse',
+        refDistance: 1,
+        maxDistance: 10000,
+        rolloffFactor: 1,
+        coneInnerAngle: 360,
+        coneOuterAngle: 0,
+        coneOuterGain: 0
+      });
+
+      // Spawn initial coins
+      spawnCoin();
+
+      // Start game loop
+      gameLoop();
+
+      // Add event listeners
+      window.addEventListener('devicemotion', handleMotion);
+      window.addEventListener('deviceorientation', handleOrientation);
+    }
+
+    function handleMotion(event) {
+      const { accelerationIncludingGravity } = event;
+      if (accelerationIncludingGravity) {
+        const ax = accelerationIncludingGravity.x || 0;
+        const ay = accelerationIncludingGravity.y || 0;
+        ball.vx = -ax * speed;
+        ball.vy = ay * speed;
+      }
+    }
+
+    function handleOrientation(event) {
+      const { alpha } = event;
+      if (alpha !== null) {
+        const direction = Math.round(alpha);
+        document.getElementById('compass').textContent = `Compass: ${direction}°`;
+      }
+    }
+
+    function spawnCoin() {
+      const x = Math.random() * (canvas.width - 2 * coinRadius) + coinRadius;
+      const y = Math.random() * (canvas.height - 2 * coinRadius) + coinRadius;
+      coins.push({ x, y });
+    }
+
+    function playCoinSound(x, y) {
+      const oscillator = audioContext.createOscillator();
+      oscillator.type = 'sine';
+      oscillator.frequency.setValueAtTime(800, audioContext.currentTime);
+      oscillator.connect(pannerNode);
+      pannerNode.connect(audioContext.destination);
+
+      // Position sound relative to ball
+      const relativeX = (x - ball.x) / canvas.width * 10;
+      const relativeY = (y - ball.y) / canvas.height * 10;
+      pannerNode.positionX.setValueAtTime(relativeX, audioContext.currentTime);
+      pannerNode.positionY.setValueAtTime(relativeY, audioContext.currentTime);
+      pannerNode.positionZ.setValueAtTime(0, audioContext.currentTime);
+
+      oscillator.start();
+      oscillator.stop(audioContext.currentTime + 0.2);
+    }
+
+    function gameLoop() {
+      // Update ball position
+      ball.x += ball.vx;
+      ball.y += ball.vy;
+
+      // Keep ball in bounds
+      ball.x = Math.max(ballRadius, Math.min(canvas.width - ballRadius, ball.x));
+      ball.y = Math.max(ballRadius, Math.min(canvas.height - ballRadius, ball.y));
+
+      // Check for coin collision
+      coins = coins.filter(coin => {
+        const dx = ball.x - coin.x;
+        const dy = ball.y - coin.y;
+        const distance = Math.sqrt(dx * dx + dy * dy);
+        if (distance < ballRadius + coinRadius) {
+          score++;
+          document.getElementById('score').textContent = `Score: ${score}`;
+          navigator.vibrate(200); // Vibrate for 200ms
+          playCoinSound(coin.x, coin.y);
+          spawnCoin();
+          return false;
+        }
+        return true;
+      });
+
+      // Draw
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      // Draw ball
+      ctx.fillStyle = 'red';
+      ctx.beginPath();
+      ctx.arc(ball.x, ball.y, ballRadius, 0, Math.PI * 2);
+      ctx.fill();
+      // Draw coins
+      ctx.fillStyle = 'yellow';
+      coins.forEach(coin => {
+        ctx.beginPath();
+        ctx.arc(coin.x, coin.y, coinRadius, 0, Math.PI * 2);
+        ctx.fill();
+      });
+
+      requestAnimationFrame(gameLoop);
+    }
+  </script>
+</body>
+</html>
